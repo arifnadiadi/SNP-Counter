@@ -1,0 +1,107 @@
+#!/bin/bash
+
+##Reference Accession
+read -p "Enter Reference Accession Number: " ref
+##Genome Size
+read -p "Enter Reference Genome Length: " genS
+##Sample Accession List
+read -p "Enter Filename Containing list of Sample Accessions: " acc
+##Window size
+read -p "Enter Window Size: " win
+##Output
+read -p "Enter Output Name: " output
+
+##Download Accession
+ncbi_down(){
+	echo "Downloading $1"
+	efetch -db nucleotide -format fasta -id ${1} > ${1}.fasta
+}
+
+##Align reads to a reference
+align(){
+	echo "Aligning Reads To Reference"
+	bwa mem ${1}.fasta ${2}.fasta > ${2}.sam
+}
+
+##Convert sam to bam 
+sam_bam(){
+	echo "Converting .sam to .bam"
+	samtools view -b -o ${1}.bam -S ${1}.sam
+}
+
+##sort the bam file
+sort_bam(){
+	echo "Sorting the bam file"
+	samtools sort -T temp ${1}.bam -o ${1}.sorted.bam
+}
+
+#index the bam file and reference file
+index_bam(){
+	echo "Indexing the bam file" 
+	samtools index ${1}.sorted.bam
+}
+
+##call SNPs
+call_snps(){
+	echo "Calling SNPs"
+	samtools faidx ${1}.fasta
+}
+
+##Create SNP table as VCF
+snp_table(){
+	echo "Creating SNP table"
+	bcftools mpileup -O v -f ${1}.fasta ${2}.sorted.bam | bcftools call -vc --ploidy 1 > ${2}.vcf
+}
+
+##Count SNPs
+count_snp(){
+	bedtools coverage -a window.bed -b ${1}.vcf -counts > ${1}_SNP_counts.txt
+}
+	
+##Clean Up
+clean_up(){
+	rm ${1}.fasta \
+	${1}.sam \
+	${1}.bam \
+	${1}.sorted.bam \
+	${1}.sorted.bam.bai \
+	${1}.vcf \
+	${1}_temp \
+	${1}_SNP_counts.txt
+}
+
+make_csv(){
+for i in ${1}; do
+	awk '{print $4}' ${i}_SNP_counts.txt > ${i}_temp
+        paste -d, temp ${i}_temp > ${output}.csv
+        cp ${output}.csv temp
+done
+}
+
+##Pipeline:
+ncbi_down $ref
+bwa index ${ref}.fasta
+echo $ref".1" > file
+sed -i '$ s/$/\t'$genS'/' file
+
+bedtools makewindows -g file -w ${win} -s 1 > window.bed
+awk '{print $2}' window.bed > ${output}.csv
+cp ${output}.csv temp
+
+while read acc; do
+	ncbi_down $acc
+	align $ref $acc
+	sam_bam $acc
+	sort_bam $acc
+	index_bam $acc
+	call_snps $ref
+	snp_table $ref $acc
+	count_snp $acc
+	make_csv $acc
+	clean_up $acc
+done < $acc
+
+rm temp
+rm file
+rm window.bed
+rm ${ref}.fasta*
